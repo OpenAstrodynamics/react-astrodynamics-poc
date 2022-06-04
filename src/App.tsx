@@ -5,15 +5,25 @@ import {
   Sphere,
   Stats,
   useTexture,
+  Text,
 } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import {
+  DefaultXRControllers,
+  useController,
+  useXR,
+  useXRFrame,
+  VRCanvas,
+} from "@react-three/xr";
 import { createInterpolatorWithFallback } from "commons-math-interpolation";
 import { button, buttonGroup, useControls } from "leva";
 import { Suspense, useEffect, useRef } from "react";
-import { Color, CubeTextureLoader, Mesh, Vector3 } from "three";
+import { Color, Mesh, TextureFilter, Vector3 } from "three";
 import create from "zustand";
 import "./App.css";
 import GMAT from "./GMAT.json";
+import { evalpoly } from "./math";
+import { skyBoxTexture } from "./skyBoxAssets";
 
 interface Trajectory {
   epochs: Array<number>;
@@ -150,6 +160,9 @@ interface BodyProps {
 
 const Earth = () => {
   const [colorMap] = useTexture(["textures/Earth-color.jpg"]);
+  const ref = useRef<Mesh>();
+
+  const { scene } = useThree();
 
   const meanRadius = 6371.008366666666;
   const polarRadius = 6356.7519;
@@ -157,9 +170,15 @@ const Earth = () => {
   const yScale = polarRadius / meanRadius;
   const xzScale = equatorialRadius / meanRadius;
   const scale = new Vector3(xzScale, yScale, xzScale);
+  useXRFrame(() => {
+    if (ref.current) {
+      const newScale = new Vector3().multiplyVectors(scale, scene.scale);
+      ref.current.scale.set(newScale.x, newScale.y, newScale.z);
+    }
+  });
   return (
     <>
-      <Sphere args={[meanRadius * 1e3, 1000, 1000]} scale={scale}>
+      <Sphere ref={ref} args={[meanRadius * 1e3, 1000, 1000]} scale={new Vector3().multiplyVectors(scale, scene.scale)}>
         <meshStandardMaterial map={colorMap} />
       </Sphere>
     </>
@@ -167,7 +186,11 @@ const Earth = () => {
 };
 
 const Moon = ({ ephemeris }: BodyProps) => {
-  const [colorMap] = useTexture(["textures/Moon-color.jpg"]);
+  const [colorMap, displacementMap, normalMap] = useTexture([
+    "textures/Moon-color2.jpg",
+    "textures/Moon-displacement.jpg",
+    "textures/Moon-normal.jpg",
+  ]);
 
   const meanRadius = 1737.4;
   const polarRadius = 1737.4;
@@ -207,7 +230,12 @@ const Moon = ({ ephemeris }: BodyProps) => {
         scale={scale}
         position={data.vectors[0]}
       >
-        <meshStandardMaterial map={colorMap} />
+        <meshStandardMaterial
+          displacementScale={100000}
+          map={colorMap}
+          normalMap={normalMap}
+          displacementMap={displacementMap}
+        />
       </Sphere>
       <Line
         points={data.vectors}
@@ -221,18 +249,15 @@ const Moon = ({ ephemeris }: BodyProps) => {
 };
 
 function SkyBox() {
+  const { Background } = useControls({
+    Background: {
+      value: "plain",
+      options: ["plain", "grid", "figures", "bounds"],
+    },
+  });
   const { scene } = useThree();
-  const loader = new CubeTextureLoader();
-  const texture = loader.load([
-    "textures/starmap/starmap_2020_16k_back.png",
-    "textures/starmap/starmap_2020_16k_front.png",
-    "textures/starmap/starmap_2020_16k_up.png",
-    "textures/starmap/starmap_2020_16k_down.png",
-    "textures/starmap/starmap_2020_16k_right.png",
-    "textures/starmap/starmap_2020_16k_left.png",
-  ]); 
-  scene.background = texture;
-  return null;
+  scene.background = skyBoxTexture(Background);
+  return <></>;
 }
 
 interface SCProps {
@@ -325,15 +350,68 @@ function Scene({ data }: SceneProps) {
     (exponent: number) => set({ Factor: `${factor(exponent)}x` }),
     (state) => state.exponent
   );
+  const { player } = useXR();
+  const { camera, scene } = useThree();
+
+  const controller = useController("right");
+  const textRef = useRef("hello world");
+  useStore.subscribe(
+    (time: number) => {
+      textRef.current = time.toString()
+    },
+    (state) => state.time
+  );
+  const textMeshRef = useRef<Mesh>();
+  const scale = new Vector3(10e6, 10e6, 10e6)
+  useXRFrame((time, frame) => {
+    console.log(time, frame)
+    scene.scale.set(
+      2.857142857142857e-7,
+      2.857142857142857e-7,
+      2.857142857142857e-7
+    );
+    // console.log(controller?.inputSource.gamepad.axes);
+    // if (textRef.current) {
+      // const str = controller?.inputSource.gamepad.axes.toString() ?? "none";
+      // console.log(str)
+      // textRef.current = str
+      // console.log(textRef.current)
+    // }
+    if (textMeshRef.current) {
+      const newScale = new Vector3().multiplyVectors(scale, scene.scale);
+      textMeshRef.current.scale.set(newScale.x, newScale.y, newScale.z);
+    }
+    // if (textMeshRef.current) {
+    //   textMeshRef.current.scale.set(
+    //     scene.scale.x,
+    //     scene.scale.y,
+    //     scene.scale.z
+    //   );
+    // }
+  });
   return (
     <>
-      <Earth />
-      <Moon ephemeris={data.ephemerides.moon} />
-      <Spacecraft trajectory={data.trajectories["S/C"]} />
-      <PerspectiveCamera makeDefault position={[0, 0, 6380e3]} far={1e24} />
       <OrbitControls />
-      <axesHelper args={[1e9]} />
+      <Earth />
+      <Text
+        ref={textMeshRef}
+        color="white"
+        anchorX="center"
+        anchorY="middle"
+        fontSize={1}
+        position={[0, 0, 0]}
+        scale={new Vector3().multiplyVectors(scale, scene.scale)}
+      >
+        {textRef.current}
+      </Text>
+      {/* <Moon ephemeris={data.ephemerides.moon} />
+      <Spacecraft trajectory={data.trajectories["S/C"]} /> */}
+      <PerspectiveCamera makeDefault position={[0, 0, 7e7]} far={1e24} />
+      {/* <axesHelper args={[1e9]} /> */}
       <ambientLight intensity={0.5} />
+      <group position={[0, 0, 4]}>
+        <primitive object={camera} />
+      </group>
       <SkyBox />
     </>
   );
@@ -342,12 +420,15 @@ function Scene({ data }: SceneProps) {
 function App() {
   return (
     <div className="App">
-      <Canvas gl={{ logarithmicDepthBuffer: true }}>
+      {/* <Canvas gl={{ logarithmicDepthBuffer: true }}> */}
+      <VRCanvas>
+        <DefaultXRControllers />
         <Stats showPanel={0} className="stats" />
         <Suspense fallback={null}>
           <Scene data={GMAT} />
         </Suspense>
-      </Canvas>
+      </VRCanvas>
+      {/* </Canvas> */}
     </div>
   );
 }
